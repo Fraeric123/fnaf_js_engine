@@ -1,0 +1,484 @@
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FNAF</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background: #000;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: auto;
+      max-width: 100%;
+      max-height: 100%;
+    }
+  </style>
+  <script src="http://www.wmeworld.xf.cz/ad.js"></script>
+</head>
+<body>
+  <script>
+    class Sound {
+      constructor(src, sm) {
+        this.src = src;
+        this.sm = sm;
+        this.buffer = null;
+        this.loaded = false;
+        this.loading = false;
+        this.loadPromise = null;
+      }
+    
+      async load() {
+        if (this.loaded) return;
+        if (this.loading) return this.loadPromise;
+        
+        this.loading = true;
+        this.loadPromise = new Promise(async (resolve, reject) => {
+          try {
+            const response = await fetch(this.src);
+            if (!response.ok) throw new Error("Chyba při načítání zvuku: " + response.status);
+    
+            const arrayBuffer = await response.arrayBuffer();
+            
+            if (!this.sm.audioContext) {
+              console.warn("AudioContext není připraven, zvuk se načte později");
+              this.loading = false;
+              resolve(false);
+              return;
+            }
+            
+            this.buffer = await this.sm.audioContext.decodeAudioData(arrayBuffer);
+            this.loaded = true;
+            this.loading = false;
+            resolve(true);
+          } catch (err) {
+            console.error("Chyba načítání zvuku:", err);
+            this.loading = false;
+            reject(err);
+          }
+        });
+        
+        return this.loadPromise;
+      }
+    
+      async play() {
+        if (!this.sm.audioContext || this.sm.audioContext.state === 'suspended') {
+          await this.sm.initAudioContext();
+        }
+    
+        if (!this.loaded) {
+          try {
+            await this.load();
+          } catch (err) {
+            console.error("Nelze přehrát zvuk - chyba při načítání:", err);
+            return;
+          }
+        }
+    
+        if (!this.loaded || !this.buffer) {
+          console.warn("Zvuk stále není načten");
+          return;
+        }
+    
+        try {
+          const source = this.sm.audioContext.createBufferSource();
+          source.buffer = this.buffer;
+          source.connect(this.sm.audioContext.destination);
+          source.start();
+        } catch (err) {
+          console.error("Chyba při přehrávání zvuku:", err);
+        }
+      }
+    }
+
+    class Frame {
+      constructor(src) {
+        this.image = new Image();
+        this.loaded = false;
+    
+        this.image.onload = () => {
+          this.loaded = true;
+        };
+    
+        if (src) {
+          this.image.src = src;
+        }
+      }
+      draw(sm, obj) {
+          if (!this.loaded) return;
+      
+          const ctx = sm.ctx;
+      
+          ctx.save();
+          ctx.globalAlpha = obj.texture.opacity;
+          ctx.scale(obj.scale, obj.scale);
+      
+          ctx.drawImage(
+            this.image,
+            obj.position.x - obj.width * obj.scale / 2,
+            obj.position.y - obj.height * obj.scale / 2,
+            obj.width * obj.scale,
+            obj.height * obj.scale
+          );
+          ctx.restore();
+      }
+    }
+
+    class Texture {
+      constructor(frames, frameDelay = 100) {
+        this.frames = frames;
+        this.frameDelay = frameDelay;
+        this.timer = 0;
+        this.current_frame = 0;
+        this.looped = true;
+        this.playing = true;
+        this.frame_count = frames.length;
+        this.opacity = 1;
+      }
+    
+      update(deltaTime) {
+        if (!this.playing) return;
+    
+        this.timer += deltaTime;
+    
+        if (this.timer >= this.frameDelay) {
+          this.timer = 0;
+          this.current_frame++;
+    
+          if (this.current_frame >= this.frame_count) {
+            this.current_frame = this.looped ? 0 : this.frame_count - 1;
+          }
+        }
+      }
+    
+      draw(sm, obj, deltaTime) {
+        this.update(deltaTime);
+        this.frames[this.current_frame].draw(sm, obj);
+      }
+    }
+    class Element{
+      constructor(){
+        this.position = {x:120,y:50};
+        this.width = 100;
+        this.height = 30;
+        this.scale = 1;
+        this.text = "";
+        this.texture = null;
+        this.type = "rectangle";
+        this.style = "black";
+        this.touchingStyle = "white";
+        this.pressedStyle = "green";
+        this.textStyle = "white";
+        this.touchingTextStyle = "black";
+        this.font = "Arial Black";
+        this.fontSize = 15;
+        this.fontWeight = "bold";
+        this.touching = false;
+        this.pressing = false;
+        this.justPressed = false;
+        this.stoppedPressing = true;
+        this.visible = true;
+        this.onPressed = () => {}
+      }
+      isInBox(ix,iy){
+        let x = this.position.x
+        let y = this.position.y
+        let w = this.width
+        let h = this.height
+        let s = this.scale
+        return (ix>x-w*s/2 && ix<x+w*s/2 && iy>y-h*s/2 && iy<y+h*s/2)
+      }
+      checkInteraction(sm){
+        if (this.isInBox(sm.mouse.x, sm.mouse.y)) {
+          this.pressing = sm.mouse.pressed
+          if (this.pressing && sm.mouse.pressedTimer == 1 && this.isInBox(sm.mouse.x, sm.mouse.y)){
+            this.onPressed();
+          }
+          if (!this.touching){
+            this.touching = true;
+          }
+        } else if (this.touching){ 
+          this.pressed = false;
+          this.touching = false;
+        }
+      }
+      draw(sm){
+        if (this.visible){
+          this.checkInteraction(sm);
+          let ctx = sm.ctx;
+          if (this.type=="rectangle"){
+            ctx.fillStyle = this.style;
+            if (this.touching && !this.pressing){
+              ctx.fillStyle = this.touchingStyle;
+            }
+            ctx.fillRect(this.position.x-this.width*this.scale/2,this.position.y-this.height*this.scale/2, this.width*this.scale, this.height*this.scale)
+            if (this.text != "") {
+              ctx.font = this.fontWeight + " " +this.fontSize+"px "+this.font
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillStyle = this.textStyle;
+              if (this.touching && !this.pressing){
+                ctx.fillStyle = this.touchingTextStyle;
+              }
+              ctx.fillText(this.text,this.position.x,this.position.y);
+            }
+          } else if (this.type=="text"){
+            ctx.fillStyle = this.style;
+            if (this.text != "") {
+              ctx.font = this.fontWeight + " " +this.fontSize+"px "+this.font
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillStyle = this.textStyle;
+              ctx.fillText(this.text,this.position.x,this.position.y);
+            }
+          } else if (this.type=="image"){
+            if (this.texture != null){this.texture.draw(sm, this, sm.deltaTime);};
+          }
+        }
+      }
+    }
+    class Scene{
+      constructor(){
+        this.background_style = "black";
+        this.elements = [];
+      }
+      addElement(element) {
+          this.elements.push(element);
+      }
+      draw(sm){
+        for (let element of this.elements) {
+          element.draw(sm)
+        }
+      }
+    }
+    class SceneManager{
+      constructor(){
+        this.canvas = document.createElement("canvas");
+        document.body.appendChild(this.canvas)
+        this.ctx = this.canvas.getContext("2d")
+        this.ctx.imageSmoothingEnabled = false;
+        this.scenes = [];
+        this.background_style = "black";
+        this.logicalWidth = 800;
+        this.logicalHeight = 450;
+        this.mouse = { x: 0, y: 0, pressed: false, pressedTimer: 0 };
+        this.touch
+        this.audioContext = null;
+        this.audioInitialized = false;
+        this.deltaTime = 0;
+        this.lastTime = 0;
+
+        this.setupCanvas();
+        this.setupEventListeners();
+        window.addEventListener('resize', () => this.setupCanvas());
+      }
+
+      async initAudioContext() {
+        if (this.audioInitialized) {
+          if (this.audioContext.state === 'suspended') {
+            await this.audioContext.resume();
+          }
+          return;
+        }
+
+        if (!this.audioContext) {
+          this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        
+        if (this.audioContext.state === 'suspended') {
+          await this.audioContext.resume();
+        }
+        
+        this.audioInitialized = true;
+      }
+      
+      setupEventListeners() {
+          this.canvas.addEventListener('mousemove', (e) => {
+              const pos = this.getMousePosition(e);
+              this.mouse.x = pos.x;
+              this.mouse.y = pos.y;
+          });
+
+          this.canvas.addEventListener('mousedown', (e) => {
+              this.requestFullscreen();
+              this.mouse.pressed = true;
+              e.preventDefault();
+          });
+
+          this.canvas.addEventListener('mouseup', () => {
+              this.mouse.pressed = false;
+          });
+
+          this.canvas.addEventListener('touchstart', (e) => {
+              this.requestFullscreen();
+              const pos = this.getTouchPosition(e);
+              this.mouse.x = pos.x;
+              this.mouse.y = pos.y;
+              this.mouse.pressed = true;
+              e.preventDefault();
+          });
+
+          this.canvas.addEventListener('touchmove', (e) => {
+              const pos = this.getTouchPosition(e);
+              this.mouse.x = pos.x;
+              this.mouse.y = pos.y;
+              e.preventDefault();
+          });
+
+          this.canvas.addEventListener('touchend', (e) => {
+            this.requestFullscreen();
+              this.mouse.pressed = false;
+              e.preventDefault();
+          });
+
+          this.canvas.addEventListener('touchcancel', (e) => {
+              this.mouse.pressed = false;
+              e.preventDefault();
+          });
+      }
+
+      getMousePosition(e) {
+        const rect = this.canvas.getBoundingClientRect();
+        const scaleX = this.logicalWidth / rect.width;
+        const scaleY = this.logicalHeight / rect.height;
+
+        return {
+          x: (e.clientX - rect.left) * scaleX,
+          y: (e.clientY - rect.top) * scaleY
+        };
+      }
+
+      getTouchPosition(e) {
+        const rect = this.canvas.getBoundingClientRect();
+        const touch = e.touches[0];
+        const scaleX = this.logicalWidth / rect.width;
+        const scaleY = this.logicalHeight / rect.height;
+
+        return {
+          x: (touch.clientX - rect.left) * scaleX,
+          y: (touch.clientY - rect.top) * scaleY
+        };
+      }
+
+      setupCanvas() {
+        this.canvas.width = this.logicalWidth;
+        this.canvas.height = this.logicalHeight;
+      }
+
+      requestFullscreen() {
+          const element = document.documentElement;
+          if (element.requestFullscreen) {
+              element.requestFullscreen();
+          } else if (element.webkitRequestFullscreen) {
+              element.webkitRequestFullscreen();
+          } else if (element.msRequestFullscreen) {
+              element.msRequestFullscreen();
+          }
+      }
+      addScene(scene) {
+          this.scenes.push(scene);
+          if (!this.currentScene) this.currentScene = scene;
+      }
+      switchScene(index) {
+          if (this.scenes[index]) {
+              this.currentScene = this.scenes[index];
+          }
+      }
+      draw() {
+          this.ctx.save();
+          if (this.currentScene) {
+              this.ctx.fillStyle = this.currentScene.background_style;
+          } else {
+              this.ctx.fillStyle = "black";
+          }
+          this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+          this.ctx.restore();
+
+          if (this.currentScene && this.currentScene.draw) {
+              this.currentScene.draw(this);
+          }
+      }
+      render(timestamp) {
+        if (this.mouse.pressed){this.mouse.pressedTimer++}else{this.mouse.pressedTimer=0}
+        this.deltaTime = timestamp - this.lastTime;
+        this.lastTime = timestamp;
+        this.touch = this.mouse;
+        this.draw();
+      }
+    }
+  </script>
+  <script>
+    let SM = new SceneManager();
+    let lastTime = 0;
+    
+    let clickSound = new Sound("sfx/click.waw", SM);
+    
+    let menu = new Scene();
+    menu.background_style = "rgb(20, 20, 120)";
+    SM.addScene(menu);
+    
+    let settings = new Scene();
+    settings.background_style = "rgb(50, 20, 120)";
+    SM.addScene(settings);
+    
+    let menu_settings_button = new Element();
+    menu_settings_button.text = "Settings";
+    menu_settings_button.position.y += 180;
+    menu_settings_button.onPressed = async () => {
+      await clickSound.play();
+      SM.switchScene(1);
+    };
+    menu.addElement(menu_settings_button);
+
+    let menu_play_button = new Element();
+    menu_play_button.text = "Play";
+    menu_play_button.position.y += 140;
+    menu_play_button.onPressed = async () => {
+      await clickSound.play();
+      SM.switchScene(1);
+    };
+    menu.addElement(menu_play_button);
+    
+    let menu_title = new Element();
+    menu_title.type = "text";
+    menu_title.text = "Menu";
+    menu_title.position.x += 250;
+    menu.addElement(menu_title);
+    
+    let animElem = new Element();
+    animElem.type = "image";
+    animElem.width = 300;
+    animElem.height = 300;
+    animElem.position = { x: 400, y: 225 };
+    animElem.texture = new Texture([new Frame("gfx/f1.jpg"), new Frame("gfx/f2.jpg")],90);
+    
+    menu.addElement(animElem);
+    
+    let el2 = new Element()
+    el2.position.y += 50
+    el2.text = "Menu"
+    el2.onPressed = async () => {
+      await clickSound.play();
+      SM.switchScene(0);
+    };
+    settings.addElement(el2)
+    
+    const loop = (timestamp) => {
+      const deltaTime = timestamp - lastTime || 0;
+      lastTime = timestamp;
+      SM.render(timestamp);
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
